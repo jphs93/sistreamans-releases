@@ -1,0 +1,43 @@
+# Snelle controle van de code (geen release): flutter analyze.
+# Fouten verschijnen als annotaties bij de run.
+name: Code controleren
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch of tag van de code"
+        required: false
+        default: "main"
+
+env:
+  CODE_REPO: jphs93/sistreamans
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Analyseren
+        run: |
+          set +e
+          dart analyze --format=machine > analyze.txt 2>&1
+          code=$?
+          # SEVERITY|TYPE|CODE|FILE|LINE|COL|LEN|MESSAGE → annotaties
+          awk -F'|' -v root="$PWD/" '
+            $1=="ERROR"   { f=$4; sub(root,"",f); printf "::error file=%s,line=%s,col=%s::%s (%s)\n", f, $5, $6, $8, $3 }
+            $1=="WARNING" { f=$4; sub(root,"",f); printf "::warning file=%s,line=%s,col=%s::%s (%s)\n", f, $5, $6, $8, $3 }
+          ' analyze.txt
+          echo "--- samenvatting ---"
+          cut -d'|' -f1 analyze.txt | sort | uniq -c
+          grep -c '^ERROR' analyze.txt && exit 1
+          exit 0
