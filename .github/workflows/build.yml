@@ -1,0 +1,180 @@
+# Bouwt Sistreamans voor Android/Google TV, Windows en macOS en publiceert een release.
+# De code staat in de privé-repo jphs93/sistreamans; deze openbare repo bevat alleen de downloads.
+# Starten: tabblad Actions → "Nieuwe versie bouwen" → Run workflow (of via `gh workflow run`).
+name: Nieuwe versie bouwen
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Versie (leeg = uit pubspec.yaml)"
+        required: false
+        default: ""
+      notes:
+        description: "Wat is er nieuw"
+        required: false
+        default: "Verbeteringen en reparaties."
+      ref:
+        description: "Branch of tag van de code"
+        required: false
+        default: "main"
+
+permissions:
+  contents: write
+
+env:
+  CODE_REPO: jphs93/sistreamans
+  BUILD_NUMBER: ${{ github.run_number }}
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      v: ${{ steps.v.outputs.v }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+      - id: v
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V=$(grep '^version:' pubspec.yaml | sed -E 's/version: *//; s/\+.*//'); fi
+          echo "v=$V" >> "$GITHUB_OUTPUT"
+
+  android:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Signeersleutel
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
+          echo "${{ secrets.ANDROID_KEY_PROPERTIES }}" > android/key.properties
+      - run: flutter pub get
+      - run: dart run flutter_launcher_icons
+      - name: APK bouwen
+        run: |
+          flutter build apk --release \
+            --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          mkdir -p dist && cp build/app/outputs/flutter-apk/app-release.apk dist/Sistreamans-android.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/
+
+  windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart run flutter_launcher_icons
+      - name: Windows-app bouwen
+        shell: bash
+        run: |
+          flutter build windows --release \
+            --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+      - name: Installer maken
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ needs.version.outputs.v }}" tool\windows_installer.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  macos:
+    needs: version
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart run flutter_launcher_icons
+      - name: macOS-app bouwen
+        run: |
+          flutter build macos --release \
+            --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
+            --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+          mkdir -p dist
+          APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
+          ditto -c -k --keepParent "$APP" dist/Sistreamans-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: dist/
+
+  release:
+    needs: [version, android, windows, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: latest.json (hier kijkt de app naar)
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          V="${{ needs.version.outputs.v }}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/v$V"
+          python3 - <<PY
+          import json, os
+          json.dump({
+            "version": "$V",
+            "build": int(os.environ["BUILD_NUMBER"]),
+            "notes": os.environ.get("NOTES", ""),
+            "downloads": {
+              "android": "$BASE/Sistreamans-android.apk",
+              "windows": "$BASE/Sistreamans-Setup.exe",
+              "macos": "$BASE/Sistreamans-macos.zip",
+            },
+          }, open("dist/latest.json", "w"), indent=2)
+          PY
+          ls -la dist
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.v }}
+          name: Sistreamans ${{ needs.version.outputs.v }}
+          body: ${{ inputs.notes }}
+          make_latest: "true"
+          files: |
+            dist/Sistreamans-android.apk
+            dist/Sistreamans-Setup.exe
+            dist/Sistreamans-macos.zip
+            dist/latest.json
