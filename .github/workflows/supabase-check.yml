@@ -1,0 +1,23 @@
+# Controleert of de Supabase-database goed is ingericht (alleen met de openbare anon-sleutel).
+name: Supabase controleren
+on: workflow_dispatch
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Controleren
+        env:
+          URL: https://fvoncqtqomqyxjfmyhdd.supabase.co
+          KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ2b25jcXRxb21xeXhqZm15aGRkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTMzNzQwODEsImV4cCI6MjEwODk1MDA4MX0.LZymKUzvhp58IE5576cAKnK_wqXB-nRXBRxJUa_AotM
+        run: |
+          for t in profiles watch_history user_state invites; do
+            r=$(curl -s -o /dev/null -w "%{http_code}" "$URL/rest/v1/$t?select=*&limit=1" -H "apikey: $KEY")
+            echo "::notice::tabel $t → HTTP $r"
+          done
+          r=$(curl -s -X POST "$URL/rest/v1/rpc/is_admin" -H "apikey: $KEY" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{}')
+          echo "::notice::rpc is_admin → $r"
+          s=$(curl -s "$URL/auth/v1/settings" -H "apikey: $KEY" | tr -d '\n' | head -c 600)
+          echo "::notice::auth settings → $s"
+          # Registreren zonder code moet geweigerd worden.
+          r=$(curl -s -X POST "$URL/auth/v1/signup" -H "apikey: $KEY" -H 'Content-Type: application/json' -d '{"email":"test-zonder-code@example.com","password":"geheim1234"}' | head -c 300)
+          echo "::notice::signup zonder code → $r"
