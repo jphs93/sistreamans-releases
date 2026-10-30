@@ -68,10 +68,18 @@ jobs:
       - run: dart run flutter_launcher_icons
       - name: APK bouwen
         run: |
+          set +e
           flutter build apk --release \
             --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
             --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
-            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ $code -ne 0 ]; then
+            # Foutregels als annotatie, zodat ze zonder logbestand te lezen zijn.
+            grep -iE "error|what went wrong|exception|failed|> " build.log | grep -v "^Note:" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            exit $code
+          fi
+          set -e
           mkdir -p dist && cp build/app/outputs/flutter-apk/app-release.apk dist/Sistreamans-android.apk
       - uses: actions/upload-artifact@v4
         with:
