@@ -112,7 +112,7 @@ jobs:
 
   macos:
     needs: version
-    runs-on: macos-latest
+    runs-on: macos-15-intel # arm64-servers zitten vaak vol; de app wordt toch universeel (Intel + Apple Silicon)
     # macOS-runners zijn soms overvol; dan gaat de release voor Android/Windows gewoon door.
     continue-on-error: true
     timeout-minutes: 40
