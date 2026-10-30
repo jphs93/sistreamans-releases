@@ -1,0 +1,70 @@
+# Alleen de Mac-versie (opnieuw) bouwen voor een bestaande release,
+# bijvoorbeeld als de Mac-servers van GitHub eerder vol zaten.
+name: Mac-versie nabouwen
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: "Soort Mac-server"
+        required: false
+        default: "macos-15-intel"
+
+permissions:
+  contents: write
+
+env:
+  CODE_REPO: jphs93/sistreamans
+
+jobs:
+  macos:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 60
+    steps:
+      - name: Laatste release lezen
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo ${{ github.repository }} --pattern latest.json --dir rel
+          echo "v=$(python3 -c 'import json;print(json.load(open("rel/latest.json"))["version"])')" >> "$GITHUB_OUTPUT"
+          echo "b=$(python3 -c 'import json;print(json.load(open("rel/latest.json"))["build"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: v${{ steps.rel.outputs.v }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+          path: code
+        continue-on-error: true
+        id: tagged
+      - uses: actions/checkout@v4
+        if: steps.tagged.outcome != 'success'
+        with:
+          repository: ${{ env.CODE_REPO }}
+          ref: main
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+          path: code
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Bouwen
+        working-directory: code
+        run: |
+          flutter pub get
+          dart run flutter_launcher_icons
+          flutter build macos --release --build-name=${{ steps.rel.outputs.v }} --build-number=${{ steps.rel.outputs.b }}
+          APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
+          ditto -c -k --keepParent "$APP" ../Sistreamans-macos.zip
+      - name: Toevoegen aan de release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=${{ steps.rel.outputs.v }}
+          python3 - <<PY
+          import json
+          d = json.load(open("rel/latest.json"))
+          d["downloads"]["macos"] = "https://github.com/${{ github.repository }}/releases/download/v$V/Sistreamans-macos.zip"
+          json.dump(d, open("rel/latest.json", "w"), indent=2)
+          PY
+          gh release upload "v$V" Sistreamans-macos.zip rel/latest.json --clobber --repo ${{ github.repository }}
