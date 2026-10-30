@@ -113,6 +113,9 @@ jobs:
   macos:
     needs: version
     runs-on: macos-latest
+    # macOS-runners zijn soms overvol; dan gaat de release voor Android/Windows gewoon door.
+    continue-on-error: true
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,6 +144,7 @@ jobs:
 
   release:
     needs: [version, android, windows, macos]
+    if: ${{ !cancelled() && needs.android.result == 'success' && needs.windows.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -155,15 +159,17 @@ jobs:
           BASE="https://github.com/${{ github.repository }}/releases/download/v$V"
           python3 - <<PY
           import json, os
+          dl = {
+            "android": "$BASE/Sistreamans-android.apk",
+            "windows": "$BASE/Sistreamans-Setup.exe",
+          }
+          if os.path.exists("dist/Sistreamans-macos.zip"):
+            dl["macos"] = "$BASE/Sistreamans-macos.zip"
           json.dump({
             "version": "$V",
             "build": int(os.environ["BUILD_NUMBER"]),
             "notes": os.environ.get("NOTES", ""),
-            "downloads": {
-              "android": "$BASE/Sistreamans-android.apk",
-              "windows": "$BASE/Sistreamans-Setup.exe",
-              "macos": "$BASE/Sistreamans-macos.zip",
-            },
+            "downloads": dl,
           }, open("dist/latest.json", "w"), indent=2)
           PY
           ls -la dist
