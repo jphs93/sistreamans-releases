@@ -1,0 +1,33 @@
+# Test de database-opzet (schema.sql + social.sql) op een echte Postgres, zoals bij Supabase.
+name: Database testen
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch van de code"
+        default: "main"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      pg:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 2s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: jphs93/sistreamans
+          ref: ${{ inputs.ref }}
+          ssh-key: ${{ secrets.CODE_DEPLOY_KEY }}
+          path: code
+      - name: Testen
+        env:
+          PGPASSWORD: test
+        run: |
+          set -o pipefail
+          psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f ci/sql_test.sql 2>&1 | tee out.txt || { tail -5 out.txt | while read l; do echo "::error::$l"; done; exit 1; }
+          grep -E "NOTICE|ALLES|kees|admin" out.txt | while read l; do echo "::notice::$l"; done
