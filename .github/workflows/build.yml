@@ -69,10 +69,14 @@ jobs:
       - name: APK bouwen
         run: |
           set +e
-          flutter build apk --release \
-            --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
+          # Per processor-soort een eigen, veel kleinere APK (de app kiest zelf de juiste),
+          # plus één universele voor de eerste installatie. Zelfde versiecode voor allemaal.
+          # Debug-info apart (niet in de app): scheelt ruimte.
+          ARGS="--release --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
             --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
-            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} 2>&1 | tee build.log
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
+            --split-debug-info=build/symbols -P force-version-code-ignoring-abi=true"
+          { flutter build apk $ARGS --split-per-abi && flutter build apk $ARGS; } 2>&1 | tee build.log
           code=${PIPESTATUS[0]}
           if [ $code -ne 0 ]; then
             # Foutregels als annotatie, zodat ze zonder logbestand te lezen zijn.
@@ -81,6 +85,10 @@ jobs:
           fi
           set -e
           mkdir -p dist && cp build/app/outputs/flutter-apk/app-release.apk dist/Sistreamans-android.apk
+          for abi in armeabi-v7a arm64-v8a x86_64; do
+            cp build/app/outputs/flutter-apk/app-$abi-release.apk dist/Sistreamans-android-$abi.apk
+          done
+          ls -la dist
       - uses: actions/upload-artifact@v4
         with:
           name: android
@@ -170,6 +178,9 @@ jobs:
           import json, os
           dl = {
             "android": "$BASE/Sistreamans-android.apk",
+            "android-armeabi-v7a": "$BASE/Sistreamans-android-armeabi-v7a.apk",
+            "android-arm64-v8a": "$BASE/Sistreamans-android-arm64-v8a.apk",
+            "android-x86_64": "$BASE/Sistreamans-android-x86_64.apk",
             "windows": "$BASE/Sistreamans-Setup.exe",
           }
           if os.path.exists("dist/Sistreamans-macos.zip"):
@@ -190,6 +201,9 @@ jobs:
           make_latest: "true"
           files: |
             dist/Sistreamans-android.apk
+            dist/Sistreamans-android-armeabi-v7a.apk
+            dist/Sistreamans-android-arm64-v8a.apk
+            dist/Sistreamans-android-x86_64.apk
             dist/Sistreamans-Setup.exe
             dist/Sistreamans-macos.zip
             dist/latest.json
