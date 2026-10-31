@@ -53,7 +53,8 @@ jobs:
         run: |
           flutter pub get
           dart run flutter_launcher_icons
-          flutter build macos --release --build-name=${{ steps.rel.outputs.v }} --build-number=${{ steps.rel.outputs.b }}
+          set -o pipefail
+          flutter build macos --release --build-name=${{ steps.rel.outputs.v }} --build-number=${{ steps.rel.outputs.b }} 2>&1 | tee build.log || { grep -iE "error|requires|deployment" build.log | grep -v "^warning" | tail -20 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
           APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
           ditto -c -k --keepParent "$APP" ../Sistreamans-macos.zip
       - name: Toevoegen aan de release

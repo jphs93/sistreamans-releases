@@ -138,10 +138,11 @@ jobs:
       - run: dart run flutter_launcher_icons
       - name: macOS-app bouwen
         run: |
+          set -o pipefail
           flutter build macos --release \
             --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
             --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
-            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
+            --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} 2>&1 | tee build.log || { grep -iE "error|requires|deployment" build.log | grep -v "^warning" | tail -20 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
           mkdir -p dist
           APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
           ditto -c -k --keepParent "$APP" dist/Sistreamans-macos.zip
