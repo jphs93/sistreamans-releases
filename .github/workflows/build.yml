@@ -18,6 +18,11 @@ on:
         description: "Branch of tag van de code"
         required: false
         default: "main"
+      beta:
+        description: "Bètaversie (Sistreamans Beta, naast de gewone app; alleen Android en macOS)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -76,6 +81,7 @@ jobs:
             --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
             --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} \
             --split-debug-info=build/symbols -P force-version-code-ignoring-abi=true"
+          if [ "${{ inputs.beta }}" = "true" ]; then ARGS="$ARGS --dart-define=BETA=true -Pbeta=true"; fi
           { flutter build apk $ARGS --split-per-abi && flutter build apk $ARGS; } 2>&1 | tee build.log
           code=${PIPESTATUS[0]}
           if [ $code -ne 0 ]; then
@@ -84,9 +90,10 @@ jobs:
             exit $code
           fi
           set -e
-          mkdir -p dist && cp build/app/outputs/flutter-apk/app-release.apk dist/Sistreamans-android.apk
+          P=Sistreamans; if [ "${{ inputs.beta }}" = "true" ]; then P=Sistreamans-Beta; fi
+          mkdir -p dist && cp build/app/outputs/flutter-apk/app-release.apk dist/$P-android.apk
           for abi in armeabi-v7a arm64-v8a x86_64; do
-            cp build/app/outputs/flutter-apk/app-$abi-release.apk dist/Sistreamans-android-$abi.apk
+            cp build/app/outputs/flutter-apk/app-$abi-release.apk dist/$P-android-$abi.apk
           done
           ls -la dist
       - uses: actions/upload-artifact@v4
@@ -96,6 +103,7 @@ jobs:
 
   windows:
     needs: version
+    if: ${{ !inputs.beta }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,16 +152,25 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: dart run flutter_launcher_icons
+      - name: "Bèta: eigen bundle-id (staat naast de gewone app)"
+        if: ${{ inputs.beta }}
+        run: sed -i '' 's/^PRODUCT_BUNDLE_IDENTIFIER = .*/PRODUCT_BUNDLE_IDENTIFIER = nl.sistreamans.sistreamans.beta/' macos/Runner/Configs/AppInfo.xcconfig
       - name: macOS-app bouwen
         run: |
           set -o pipefail
-          flutter build macos --release \
+          BETA_ARG=""; if [ "${{ inputs.beta }}" = "true" ]; then BETA_ARG="--dart-define=BETA=true"; fi
+          flutter build macos --release $BETA_ARG \
             --build-name=${{ needs.version.outputs.v }} --build-number=$BUILD_NUMBER \
             --dart-define=SUPABASE_URL=${{ secrets.SUPABASE_URL }} \
             --dart-define=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }} 2>&1 | tee build.log || { grep -iE "error|requires|deployment" build.log | grep -v "^warning" | tail -20 | while IFS= read -r l; do echo "::error::$l"; done; exit 1; }
           mkdir -p dist
           APP=$(find build/macos/Build/Products/Release -maxdepth 1 -name "*.app" | head -1)
-          ditto -c -k --keepParent "$APP" dist/Sistreamans-macos.zip
+          if [ "${{ inputs.beta }}" = "true" ]; then
+            mv "$APP" "build/macos/Build/Products/Release/Sistreamans Beta.app"
+            ditto -c -k --keepParent "build/macos/Build/Products/Release/Sistreamans Beta.app" dist/Sistreamans-Beta-macos.zip
+          else
+            ditto -c -k --keepParent "$APP" dist/Sistreamans-macos.zip
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -161,7 +178,7 @@ jobs:
 
   release:
     needs: [version, android, windows, macos]
-    if: ${{ !cancelled() && needs.android.result == 'success' && needs.windows.result == 'success' }}
+    if: ${{ !cancelled() && needs.android.result == 'success' && (inputs.beta || needs.windows.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -171,20 +188,23 @@ jobs:
       - name: latest.json (hier kijkt de app naar)
         env:
           NOTES: ${{ inputs.notes }}
+          BETA: ${{ inputs.beta }}
         run: |
           V="${{ needs.version.outputs.v }}"
-          BASE="https://github.com/${{ github.repository }}/releases/download/v$V"
+          if [ "$BETA" = "true" ]; then TAG=beta; P=Sistreamans-Beta; else TAG="v$V"; P=Sistreamans; fi
+          BASE="https://github.com/${{ github.repository }}/releases/download/$TAG"
           python3 - <<PY
           import json, os
           dl = {
-            "android": "$BASE/Sistreamans-android.apk",
-            "android-armeabi-v7a": "$BASE/Sistreamans-android-armeabi-v7a.apk",
-            "android-arm64-v8a": "$BASE/Sistreamans-android-arm64-v8a.apk",
-            "android-x86_64": "$BASE/Sistreamans-android-x86_64.apk",
-            "windows": "$BASE/Sistreamans-Setup.exe",
+            "android": "$BASE/$P-android.apk",
+            "android-armeabi-v7a": "$BASE/$P-android-armeabi-v7a.apk",
+            "android-arm64-v8a": "$BASE/$P-android-arm64-v8a.apk",
+            "android-x86_64": "$BASE/$P-android-x86_64.apk",
           }
-          if os.path.exists("dist/Sistreamans-macos.zip"):
-            dl["macos"] = "$BASE/Sistreamans-macos.zip"
+          if os.path.exists("dist/Sistreamans-Setup.exe"):
+            dl["windows"] = "$BASE/Sistreamans-Setup.exe"
+          if os.path.exists("dist/$P-macos.zip"):
+            dl["macos"] = "$BASE/$P-macos.zip"
           json.dump({
             "version": "$V",
             "build": int(os.environ["BUILD_NUMBER"]),
@@ -193,7 +213,30 @@ jobs:
           }, open("dist/latest.json", "w"), indent=2)
           PY
           ls -la dist
+      # Bèta: één vaste pre-release "beta" die steeds wordt bijgewerkt (oude bestanden eerst weg).
+      - name: Bèta-release leegmaken
+        if: ${{ inputs.beta }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete beta --yes --cleanup-tag -R ${{ github.repository }} || true
       - uses: softprops/action-gh-release@v2
+        if: ${{ inputs.beta }}
+        with:
+          tag_name: beta
+          name: Sistreamans Beta ${{ needs.version.outputs.v }} (build ${{ github.run_number }})
+          body: ${{ inputs.notes }}
+          prerelease: true
+          make_latest: "false"
+          files: |
+            dist/Sistreamans-Beta-android.apk
+            dist/Sistreamans-Beta-android-armeabi-v7a.apk
+            dist/Sistreamans-Beta-android-arm64-v8a.apk
+            dist/Sistreamans-Beta-android-x86_64.apk
+            dist/Sistreamans-Beta-macos.zip
+            dist/latest.json
+      - uses: softprops/action-gh-release@v2
+        if: ${{ !inputs.beta }}
         with:
           tag_name: v${{ needs.version.outputs.v }}
           name: Sistreamans ${{ needs.version.outputs.v }}
